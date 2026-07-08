@@ -168,6 +168,25 @@
   .mode-head{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;}
   .est-table td .direct-in{width:100%;max-width:140px;text-align:right;font-family:var(--mono);font-size:13px;border:1px solid var(--line);border-radius:6px;padding:7px 9px;outline:none;margin-left:auto;display:block;background:#fff;}
   .est-table td .direct-in:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  /* per-year formula editor */
+  .yf-box{margin-top:18px;border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  .yf-box summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--accent-ink);padding:11px 14px;background:var(--bg);list-style:none;}
+  .yf-box summary::-webkit-details-marker{display:none;}
+  .yf-box summary:before{content:'▸ ';color:var(--muted);}
+  .yf-box[open] summary:before{content:'▾ ';}
+  .yf-body{padding:14px;}
+  .yf-note{font-size:12px;color:var(--ink-soft);margin-bottom:12px;line-height:1.6;}
+  .yf-row{display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line);}
+  .yf-row:first-of-type{border-top:none;}
+  .yf-year{flex:none;width:70px;font-family:var(--mono);font-weight:600;font-size:13px;padding-top:8px;}
+  .yf-year .yr-tag{display:block;font-size:9px;color:var(--muted);font-weight:600;margin-top:2px;font-family:var(--sans);}
+  .yf-fields{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .yf-field label{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;margin-bottom:5px;color:var(--ink-soft);}
+  .yf-field input{width:100%;font-family:var(--mono);font-size:12.5px;border:1px solid var(--line-strong);border-radius:7px;padding:8px 10px;outline:none;background:#fff;}
+  .yf-field input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  .yf-field input::placeholder{color:#b4bec9;font-size:11.5px;}
+  .yf-err{color:var(--up);font-size:11.5px;font-weight:500;margin:2px 0 0 84px;}
+  .yf-err:empty{display:none;}
   .doc textarea[readonly],.field input[readonly],.field select:disabled{background:var(--bg);cursor:default;color:var(--ink-soft);}
   .sync-modal .field input[readonly]{font-size:11px;color:var(--ink-soft);}
 
@@ -630,9 +649,17 @@ function computeProjection(c){
   return PROJECT_YEARS.map((year,yi)=>{
     const ov={};
     c.model.drivers.forEach(d=>{const k=(d.key||'').trim(); if(k) ov[k]=projValue(d,yi,year);});
-    const r=computeScenario(c,ov);
+    const r=computeScenario(c,ov,year);
     return Object.assign({year,yi},r);
   });
+}
+/* 연도별 수식 (비어 있으면 기본 수식 사용) */
+function resolveFormulas(m, year){
+  const yf=(m.yearFormulas&&m.yearFormulas[year])||{};
+  return {
+    rev:(yf.rev&&yf.rev.trim())? yf.rev : m.revenueFormula,
+    op:(yf.op&&yf.op.trim())? yf.op : m.opFormula
+  };
 }
 function normCode(t){
   if(t==null) return '';
@@ -794,7 +821,7 @@ function directYear(c,year){
   const y=(c.model.direct&&c.model.direct.years)||{};
   return y[year]||{};
 }
-function computeScenario(company, overrides){
+function computeScenario(company, overrides, year){
   const m=company.model;
   if(m.mode==='direct'){
     const d=directYear(company, PROJECT_YEARS[0]);
@@ -804,6 +831,8 @@ function computeScenario(company, overrides){
     return {revenue,op,margin,err};
   }
   overrides=overrides||{};
+  const yr = year!=null? year : PROJECT_YEARS[0];
+  const fm = resolveFormulas(m, yr);
   const scope={};
   for(const d of m.drivers){
     const k=(d.key||'').trim();
@@ -812,9 +841,9 @@ function computeScenario(company, overrides){
   }
   let revenue=NaN, op=NaN, err=null;
   try{
-    revenue=evalFormula(m.revenueFormula,scope);
+    revenue=evalFormula(fm.rev,scope);
     const s2=Object.assign({},scope,{revenue:revenue,'매출':revenue,'매출액':revenue});
-    op=evalFormula(m.opFormula,s2);
+    op=evalFormula(fm.op,s2);
   }catch(e){ err=e.message; }
   const margin=(isFinite(revenue)&&revenue!==0&&isFinite(op))? op/revenue*100 : NaN;
   return {revenue,op,margin,err};
@@ -1440,10 +1469,48 @@ function renderFormulaModel(c,wrap){
     '예: ',el('code',{},'매출 * (1 - 원가율) - 판관비')
   ));
 
+  wrap.appendChild(yearFormulaEditor(c));
+
   const rc=el('div',{class:'result-cards',id:'modelCards'});
   wrap.appendChild(rc);
   wrap.appendChild(renderProjectionSection(c));
   requestAnimationFrame(()=>updateModelResults(c,revErr,opErr));
+}
+function yearFormulaEditor(c){
+  const m=c.model;
+  m.yearFormulas=m.yearFormulas||{};
+  const hasAny=PROJECT_YEARS.some(y=>m.yearFormulas[y]&&((m.yearFormulas[y].rev||'').trim()||(m.yearFormulas[y].op||'').trim()));
+  const det=el('details',{class:'yf-box'});
+  if(hasAny) det.setAttribute('open','open');
+  det.appendChild(el('summary',{},'연도별 수식 다르게 적용 (선택)'));
+  const bodyEl=el('div',{class:'yf-body'});
+  bodyEl.appendChild(el('div',{class:'yf-note'},'특정 연도에만 다른 수식을 쓰려면 아래에 입력하세요. ', el('b',{},'비워두면 위의 기본 수식을 사용'),'합니다.'));
+  PROJECT_YEARS.forEach(year=>{
+    const yf=(m.yearFormulas[year]=m.yearFormulas[year]||{});
+    const err=el('div',{class:'yf-err'});
+    const mk=(field,base,tag,tagcls)=>{
+      const inp=el('input',{type:'text',spellcheck:'false',value:yf[field]||'',placeholder:'기본: '+(base||'—'),
+        oninput:e=>{ yf[field]=e.target.value; scheduleSave(c.id); validateYear(); updateModelResults(c); refreshProjection(c); }});
+      return el('div',{class:'yf-field'},
+        el('label',{}, el('span',{class:'tag '+tagcls},tag), field==='rev'?'매출':'영업이익'), inp);
+    };
+    function validateYear(){
+      err.textContent='';
+      const fm=resolveFormulas(m,year);
+      const scope={}; m.drivers.forEach(d=>{const k=(d.key||'').trim(); if(k) scope[k]=projValue(d,PROJECT_YEARS.indexOf(year),year);});
+      try{ const rv=evalFormula(fm.rev,scope); evalFormula(fm.op,Object.assign({},scope,{revenue:rv,'매출':rv,'매출액':rv})); }
+      catch(e){ err.textContent=year+' 수식 오류: '+e.message; }
+    }
+    const row=el('div',{class:'yf-row'},
+      el('div',{class:'yf-year'}, year, PROJECT_YEARS.indexOf(year)===0?el('span',{class:'yr-tag'},'올해'):null),
+      el('div',{class:'yf-fields'}, mk('rev',m.revenueFormula,'매출',''), mk('op',m.opFormula,'영업이익','op'))
+    );
+    bodyEl.appendChild(row);
+    bodyEl.appendChild(err);
+    validateYear();
+  });
+  det.appendChild(bodyEl);
+  return det;
 }
 function refreshProjection(c){
   const s=document.getElementById('projSection');
@@ -1453,7 +1520,7 @@ function renderProjectionSection(c){
   const box=el('div',{class:'sens-block',id:'projSection'});
   box.appendChild(el('div',{class:'head',style:{marginTop:'30px'}},
     el('h3',{},'연간 추정 ('+PROJECT_YEARS[0]+'–'+PROJECT_YEARS[2]+')'),
-    el('p',{},'올해는 기준값을 사용하고, 향후 2개년은 변수별 연도값을 입력하면 같은 수식으로 매출·영업이익이 계산됩니다.')
+    el('p',{},'올해는 기준값을 사용하고, 향후 2개년은 변수별 연도값을 입력하면 매출·영업이익이 계산됩니다. 연도별 수식을 따로 지정했다면 그 수식이 적용됩니다.')
   ));
   const drivers=c.model.drivers.filter(d=>(d.key||'').trim());
   if(!drivers.length){
